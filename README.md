@@ -1,6 +1,6 @@
 # Identifying Elite College Football Teams Statistically
 
-This project examines whether elite college football teams can be identified using season-level performance metrics rather than reputation or narrative. Using publicly available data from the `cfbfastR` package, I model total season wins as a function of offensive efficiency, defensive performance, and possession structure for teams from 2004–2025.
+This project examines whether elite college football teams can be identified using season-level performance metrics rather than reputation or narrative. Using publicly available data from the `cfbfastR` package, I model total season wins as a function of offensive efficiency, defensive performance, and possession structure for teams from 2004–2025. You can see the full compelted project using this link: https://jakeblumengarten.shinyapps.io/predict_total_wins/.
 
 ## Methods
 - Collected game-level and season-level data using `cfbfastR`
@@ -25,4 +25,3 @@ This analysis focuses on historically elite and high-profile teams and should be
 ## Author
 Jake Blumengarten  
 [LinkedIn](https://www.linkedin.com/in/jake-blumengarten)  
-[GitHub](https://github.com/JakeBlumengarten)
