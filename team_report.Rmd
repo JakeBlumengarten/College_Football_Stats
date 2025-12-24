@@ -1,0 +1,593 @@
+---
+title: "Can Elite College Football Teams Be Identified Statistically?"
+author: "Jake Blumengarten"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    theme: flatly
+runtime: shiny
+resource_files:
+- Data/download.csv
+- Data/raw_data.csv
+- Data/season_stats.csv
+- Data/test_correct.csv
+- Data/test_data.csv
+- Data/test_results.csv
+- Data/train_data.csv
+- Data/train_df.csv
+- Plots/def_field_pos_avg_start.png
+- Plots/def_passing_plays_rate.png
+- Plots/off_drives.png
+- Plots/off_explosiveness.png
+- Plots/off_passing_plays_success_rate.png
+- Plots/off_rushing_plays_rate.png
+- Plots/off_stuff_rate.png
+- Plots/off_total_opportunities.png
+- Plots/offensive_explosiveness_vs_wins.png
+- Plots/points_allowed_pg.png
+- Plots/rushing_yards.png
+- Plots/turnovers.png
+- Plots/yards_for_vs_yards_allowed_per_game.png
+---
+
+```{=html}
+<style>
+/* Keep text readable */
+.main-container {
+  max-width: 1200px !important;
+}
+
+/* Allow plots & tables to expand */
+.plot-container,
+.table-container {
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Slightly better typography */
+p {
+  line-height: 1.6;
+  font-size: 16px;
+}
+
+h1, h2, h3 {
+  margin-top: 1.5em;
+}
+</style>
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(cfbfastR)
+library(cfbplotR)
+library(tidyr)
+library(purrr)
+library(glmnet)
+library(dplyr)
+library(car)
+library(gt)
+library(here)
+library(kableExtra)
+library(knitr)
+library(DT)
+library(broom)
+library(gt)
+library(shiny)
+season_stats <- read.csv(here("Data", "season_stats.csv"))
+raw_data <- read.csv(here("Data", "raw_data.csv"))
+train_data <- read.csv(here("Data", "train_df.csv"))
+test_data <- read.csv(here("Data", "test_results.csv"))
+test_correct <- read.csv(here("Data", "test_correct.csv"))
+final_model <- readRDS("Models/wins_model.rds")
+```
+```{r diagnostics-setup, include = FALSE}
+final_variables <- attr(terms(final_model), "term.labels")
+n <- nrow(season_stats)
+p <- ncol(final_variables) + 1
+
+# MSE
+MSE <- summary(final_model)$sigma^2
+
+# PRESS
+PRESS <- function(model) {
+  e  <- residuals(model)
+  h  <- hatvalues(model)
+  sum((e / (1 - h))^2)
+}
+PRESS_val <- PRESS(final_model)
+PRESS_avg <- PRESS_val / n
+
+# cuttoff values
+cuttoff <- (2 * p) / n
+quantity <- qf(0.50, df1 = p, df2 = n - p)
+```
+
+## Research Quesiton and Hypothesis
+
+Which college football team was the best to play the game? Was it the '06 Gators with Tim Tebow and Chris Leak? How about the 2020 Crimson Tide with Mac Jones? This question is what this project will attempt to answer using publicly available data from the `cfbfastR` package. 
+
+## Data Sources and Limitations
+
+- The functions I used for this project only contain data after the 2004 season, so I was not able to include any of the great teams prior to then like the 2001 Miami Hurricanes. 
+- A `talent` variable is available that is a talent composite sourced from 247 rankings, but it is only available from 2015-present. I think this would be a good predictor of wins, but I can't use it unless I take out teams from this already limited study.
+- In the future, I would like to get a random sample of teams and years to make a more robust and fair model.
+
+## Methodology
+
+This project is all about my ability to work with season data in college football. I started off by pulling what I thought to be the best teams to ever play at the college level and by what data was available publicly. I used functions `cfbd_game_team_stats()` and `cfbd_stats_season_advanced()` from the `cfbfastR` package to get game data from each season. I picked the teams that seemed interesting to me and referenced a Bleacher Report article discussing this very topic. For reference, I also included all the 2025 College Football Playoff Teams as well as the 2025 Florida Gators as reference points for the analysis. Here is what the raw data looks like:
+
+### Raw Data
+
+```{r, echo = FALSE}
+# Define columns that should be visible on load
+raw_core_cols <- c(
+  "school",
+  "season",
+  "home_away",
+  "opponent",
+  "points",
+  "points_allowed"
+)
+
+DT::datatable(
+  raw_data %>% select(-X),
+  filter = "top",
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 10,
+    dom = "Bfrtip",
+    buttons = c("colvis", "copy", "csv"),
+    scrollX = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(!names(raw_data) %in% raw_core_cols) - 1,
+        visible = FALSE
+      )
+    )
+  ),
+  caption = "Interactive Raw Game-Level Data (Use column selector to reveal additional metrics)"
+)
+```
+
+### Season Data
+
+I then combined all the games into season data using the `group_by()` function in `R` as well as `summarize()`:
+
+```{r, echo = FALSE}
+season_core_cols <- c(
+  "school",
+  "season",
+  "off_stuff_rate",
+  "off_passing_plays_success_rate",
+  "off_total_opportunities",
+  "points_allowed_pg"
+)
+
+DT::datatable(
+  season_stats %>% select(-X),
+  filter = "top",
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 10,
+    dom = "Bfrtip",
+    buttons = c("colvis", "copy", "csv"),
+    scrollX = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(!names(season_stats) %in% season_core_cols) - 1,
+        visible = FALSE
+      )
+    )
+  ),
+  caption = "Season-Level Team Statistics (Additional variables available via column selector)"
+)
+```
+
+## Getting Familiar With the Data
+
+To get more familiar of the metrics I could potentially use in my model, here are some visualizations I created to illustrate which team was really the best.
+
+### Can Offensive Explosiveness Predict Wins?
+
+```{r, echo = FALSE}
+include_graphics(here("Plots", "offensive_explosiveness_vs_wins.png"))
+```
+
+Looking at this plot, it seems that a more explosive offense does not mean that you win more games. According to the graph, the 2025 Vanderbilt team was the most explosive and they didn't even make the playoffs! 
+
+### Elite Offense or Defense? - Offensive Yards and Yards Allowed Per Game
+
+```{r, echo = FALSE}
+include_graphics(here("Plots", "yards_for_vs_yards_allowed_per_game.png"))
+```
+
+This plot makes sense because the more yards you gain on offense is likley correlated to the amount of yards you give up on defense since your offense is on the field for less time, therefore allowing opposing teams to gain more against you.
+
+I've often thought how defense's in college football have been becoming obsolete since everyone's offense ability is so good. This graph dosen't seem to agree because teams with great offenses do not always win the championships. As you can see, teams that win more are concentrated below the linear regression fit line. This makes sense since defense is said to win championships.
+
+### Variables in my Model
+
+All of these plots have total_wins on the Y-axis because my model attempts to predict total number of wins in a season for any given team.
+
+```{r, echo = FALSE}
+# List of available plots
+plot_choices <- c(
+  "Rushing Yards" = "rushing_yards.png",
+  "Turnovers" = "turnovers.png",
+  "Off Stuff Rate" = "off_stuff_rate.png",
+  "Off Drives" = "off_drives.png",
+  "Off Rushing Plays Rate" = "off_rushing_plays_rate.png",
+  "Off Total Opportunities" = "off_total_opportunities.png",
+  "Off Passing Plays Success Rate" = "off_passing_plays_success_rate.png",
+  "Points Allowed Per Game" = "points_allowed_pg.png",
+  "Def Field Position Avg Start" = "def_field_pos_avg_start.png",
+  "Def Passing Plays Rate" = "def_passing_plays_rate.png"
+)
+
+# UI
+selectInput(
+  inputId = "plot_select",
+  label = "Select Plot:",
+  choices = plot_choices
+)
+```
+
+```{=html}
+<div style="max-width: 800px; margin: auto;">
+```
+
+```{r, echo = FALSE}
+# Output
+
+renderImage({
+  list(
+    src = here("Plots", input$plot_select),
+    filetype = "image/png",
+    alt = "Model Plot",
+    width = "100%",
+    height = "500px"
+  )
+}, deleteFile = FALSE)
+```
+
+```{=html}
+</div>
+<br><br><br>
+```
+
+## Building a Regression Model
+
+Variable selection followed a three-stage procedure: LASSO regression was used for initial feature screening, multicollinearity was assessed using variance inflation factors (VIF), and backward elimination selection based on AIC was applied to obtain this final model:
+
+```{r}
+final_variables
+```
+- `rushing_yards`: total number of yards rushed during the course of a season
+- `turnovers`: total number of turnovers in a season
+- `off_stuff_rate`: percentage of a team's running plays that are tackled for negative yards or no gain on a running play
+- `off_rushing_plays_rate`: percentage of an offense's total plays that are rushing plays
+- `def_passing_plays_rate`: frequency at which a specific defense faces passing plays
+- `off_drives`: total number of drives an offense had across a season
+- `off_total_opportunities`: total number of offensive possessions that qualify as a scoring opportunity based on certain criteria (e.g., crossing the opponent's 40-yard line or red zone entries)
+- `off_passing_plays_success_rate`: A passing play is generally considered "successful" if it achieves a certain percentage of the required yards to gain a first down (50% of yards to go on 1st down, 70% of yards to go on 2nd down, 100% of yards to go on 3rd or 4th down)
+- `points_allowed_pg`: number of points given up per game
+- `def_field_pos_avg_start`: average yard line where a team's defense forces the opposing offense to begin their drives
+
+### Training Dataset
+
+I then split my data into 70% training and 30% testing. Here is the data I used to train the regression model:
+
+```{r training_data_table, echo=FALSE}
+DT::datatable(
+  train_data %>% select(-X),
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Table 3: Training Dataset"
+)
+```
+
+Using this data, I trained the linear regression model.
+
+```{r lasso_feature_selection, echo = FALSE}
+final_model_summary <- tidy(final_model) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4)
+  )
+
+final_model_summary %>%
+  gt() %>%
+  tab_header(
+    title = "Linear Regression Results: Wins Model",
+    subtitle = "Dependent Variable: Total Wins"
+  ) %>%
+  cols_label(
+    term = "Variable",
+    estimate = "Estimate",
+    std.error = "Std. Error",
+    statistic = "t Statistic",
+    p.value = "p-value"
+  ) %>%
+  fmt_markdown(columns = term) %>%
+  tab_source_note(
+    source_note = "Coefficients estimated using training data only."
+  )
+```
+
+### Test Dataset
+
+These are seasons not included in the training dataset that the model attempted to predict:
+
+```{r, echo = FALSE}
+test_data%>%
+  kable(caption = "Table 4: True vs Predicted Wins") %>%
+  kable_styling(
+    font_size = 14,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+### Testing the Model for Assumptions
+
+The performance and validity of the regression model were evaluated using a series of diagnostic plots and statistical measures (see Appendix for full diagnostic tables and values). Together, these diagnostics assess whether the model meets the core linear regression assumptions: linearity, constant variance, independence, normality of residuals, and lack of undue influence from individual observations.
+
+#### Residuals
+
+The test-set plot of actual versus predicted wins shows points clustered tightly around the 45-degree reference line, indicating that the model generalizes well beyond the training data. There is no systematic over- or under-prediction, and deviations from the line are modest. This visual result is reinforced quantitatively by the PRESS statistic `r round(PRESS_avg, 3)`, which yields an average prediction error ($\frac{PRESS}{n}$) nearly identical to the model’s in-sample error variance (MSE = `r MSE`). The small gap between $\frac{PRESS}{n}$ and MSE is `r PRESS_avg - MSE` indicating strong predictive stability and minimal overfitting.
+
+```{r, echo = FALSE}
+plot(
+  test_data$total_wins,
+  test_data$predicted_wins,
+  xlab = "Actual Wins",
+  ylab = "Predicted Wins",
+  main = "Test Dataset Predictions"
+)
+abline(0, 1, col = "red", lwd = 2)
+```
+
+```{r, echo = FALSE}
+plot(
+  final_model$fitted.values,
+  residuals(final_model),
+  xlab = "Fitted Values",
+  ylab = "Residuals",
+  main = "Residuals vs Fitted (Training Data)"
+)
+abline(h = 0, col = "red", lwd = 2)
+```
+
+The Residuals-vs-Fitted plot does not display any curved pattern or structure; the residuals remain centered around zero across the full range of fitted values. This supports both linearity and  constant variance. A few moderately large residuals appear, but none exceed reasonable thresholds or suggest model misspecification.
+
+#### Influential Points (X and Y)
+
+```{r, echo = FALSE}
+plot(
+  hatvalues(final_model),
+  rstudent(final_model),
+  xlab = "Hat Values",
+  ylab = "Studentized Residuals",
+  pch = 19,
+  xlim = c(0, max(hatvalues(final_model)) + 0.05)
+)
+abline(v = c(0.4081633, 2), col = "red", lty = 2, lwd = 2)
+abline(h = c(-2, 2), col = "blue", lty = 2)
+```
+
+The leverage–residual diagnostic identifies potential high-leverage observations using the threshold $\frac{2p}{n}$, which is `r round(cuttoff, 3)`. A handful of points exceed this line—unsurprising given the small sample size—but their studentized residuals remain well within ±2. These observations do not violate assumptions and do not threaten the model’s stability.
+
+#### Cook's Distance 
+
+```{r, echo = FALSE}
+# Cook's Distance plot
+plot(
+  cooks.distance(final_model),
+  ylab = "Cook's distance",
+  xlab = "Index",
+  pch = 19
+)
+abline(h = quantity, col = "red", lty = 2)
+```
+
+Cook’s Distance results tell a similar story. The highest Cook’s D value is approximately 0.16, far below concern levels `r quantity`. When compared against the conservative `r quantity` reference value (Appendix), several points surpass the threshold, but none approach levels associated with influential observations. Thus, no single data point exerts undue influence on the model’s estimates.
+
+#### Overall Assesment
+
+Across all diagnostics—residual patterns, leverage, Cook’s Distance, PRESS, MSE, and cuttoff comparisons—the model satisfies the standard regression assumptions. It shows no evidence of severe violations, overfitting, or influential outliers. The agreement between $\frac{PRESS}{n}$ and MSE confirms strong predictive reliability, and the influence metrics indicate that the fitted regression is stable and robust to individual observations.
+
+## Conclusion
+
+This analysis shows that elite college football teams leave clear statistical signatures, and those patterns can be modeled with surprising consistency. Across rushing efficiency, offensive structure, defensive discipline, and scoring opportunities, the strongest programs share measurable traits that reliably translate into wins. The final regression model captured these relationships with stability and accuracy, reinforcing that team quality is not just a matter of reputation or highlight reels—there are quantifiable markers of excellence.
+
+While this study can’t crown a definitive “best team of all time,” it does demonstrate that greatness follows a recognizable blueprint. The numbers cut through the noise, offering a grounded way to compare teams across seasons and contexts. College football may thrive on emotion, narrative, and tradition, but beneath all of that, the data still tells a coherent story about what winning football truly looks like.
+
+## References
+
+Gilani, S., Easwaran, A., Lee, J., & Hess, E. (2021). 
+*cfbfastR: The SportsDataverse's R package for college football data.* 
+https://cfbfastR.sportsdataverse.org/.
+
+Bleacher Report. (2020). *The 10 best college football teams of all time.* 
+https://bleacherreport.com/articles/2885279-the-10-best-college-football-teams-of-all-time.
+
+OpenAI. (2025). *ChatGPT (Version 5.1)* [Large language model]. https://chat.openai.com/
+
+## Appendix
+
+### LASSO
+
+```{r appendix_lasso, echo = TRUE}
+# ============================================================
+# 1. Base modeling dataset
+# ============================================================
+
+model_df <- season_stats %>%
+  select(
+    -X,
+    -total_losses,
+    -games,
+    -conference_losses,
+    -home_losses,
+    -away_losses,
+    -postseason_losses,
+    -postseason_wins,
+    -champion
+  )
+
+# ============================================================
+# 2. LASSO (feature screening)
+# ============================================================
+
+model_df_temp <- model_df%>%
+  select(-school, -season)
+
+x_mat <- model.matrix(total_wins ~ . - conference, model_df_temp)[, -1]
+y_vec <- model_df$total_wins
+
+lasso_cv <- cv.glmnet(x_mat, y_vec, alpha = 1)
+
+coef(lasso_cv, s = "lambda.min")
+```
+
+
+---
+
+### Addressing Multicollinearity
+
+
+```{r appendix_vif_output, echo = TRUE}
+# ============================================================
+# 3. Initial OLS model
+# ============================================================
+
+ols_full <- lm(
+  total_wins ~
+    points +
+    rushing_yards +
+    turnovers +
+    off_drives +
+    off_stuff_rate +
+    off_total_opportunities +
+    off_rushing_plays_rate +
+    off_passing_plays_success_rate +
+    points_allowed_pg +
+    def_field_pos_avg_start +
+    def_passing_downs_ppa +
+    def_passing_plays_rate +
+    def_passing_plays_ppa,
+  data = model_df
+)
+
+summary(ols_full)
+vif(ols_full)
+```
+
+---
+
+### Backward Stepwise Model Selection
+
+```{r appendix_backward, echo = TRUE}
+# ============================================================
+# 4. Backward selection
+# ============================================================
+
+ols_final <- step(ols_full, direction = "backward")
+
+summary(ols_final)
+vif(ols_final)
+```
+
+---
+
+### Final Model Estimation
+
+```{r appendix_final_model_app, echo = TRUE}
+# Fit final model on training set
+final_model <- update(
+  ols_final,
+  data = train_data
+)
+```
+
+```{r appendix_model_performance, echo = TRUE}
+summary(final_model)
+(res <- resid(final_model))
+(MSE <- summary(final_model)$sigma^2)
+
+(stud_res <- rstudent(final_model)) # extreme in y?
+
+
+hatvalues(final_model) # extreme in x?
+(p <- length(final_variables))
+(n <- nrow(season_stats))
+(cuttoff <- (2*p)/n)
+
+plot(hatvalues(final_model), rstudent(final_model),
+      xlab = "Leverage (hat values)",
+      ylab = "Studentized Residuals",
+      pch = 19)
+abline(v = cuttoff, col = "red", lty = 2)
+abline(h = c(-2, 2), col = "blue", lty = 2)
+
+# Studentized residuals plot
+plot(
+  stud_res,
+  pch = 19,
+  col = "black",
+  xlab = "Observation",
+  ylab = "Studentized Residual",
+  main = "Studentized Residuals"
+)
+
+# Add reference lines
+abline(h = 0, lwd = 2, col = "gray40")
+abline(h = c(-2, 2), lty = 2, col = "red")
+
+# Cooks Distance 
+cooks.distance(final_model)
+# Median of F-distribution
+quantity <- qf(0.50, df1 = p, df2 = n - p)
+
+# Cook's Distance plot
+plot(
+  cooks.distance(final_model),
+  ylab = "Cook's distance",
+  xlab = "Index",
+  pch = 19
+)
+
+abline(h = quantity, col = "red", lty = 2)
+
+## PRESS
+PRESS <- function(model) {
+  e  <- residuals(model)
+  h  <- hatvalues(model)
+  sum((e / (1 - h))^2)
+}
+
+(PRESS_val <- PRESS(final_model)/n) 
+```
+
+## Thank You!
+
+This report used OpenAI’s ChatGPT (Version 5.1, 2025) for assistance in R code debugging, formatting model output tables, and refining methodological descriptions.
+
+Hello! I am an aspiring data analyst that loves sports, and I am putting together projects to showcase skills I am learning. I hope you enjoy! Here are some of my other projects and accounts if you are interested:
+
+- www.linkedin.com/in/jake-blumengarten
+- https://github.com/JakeBlumengarten?tab=repositories
+- blumengartenjake@gmail.com

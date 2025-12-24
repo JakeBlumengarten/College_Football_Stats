@@ -4,29 +4,103 @@ library(dplyr)
 library(tidyr)
 library(purrr)
 
-# Randomly Select 10 Teams Each Year Since 2004
+# Randomly Select Teams from this year as a sample
 # --------------------------------------------------------------------------------------------------------
-teams_all <- read.csv("Data/download.csv")
 
-teams_all <- teams_all %>%
-  filter(!is.na(Conference)) %>%
-  select(School, Conference)%>%
-  filter(Conference %in% c("Big Ten", "ACC", "SEC"))
+set.seed(42)
+seasons <- 2004:2025
+target_n <- 100  # total team-season rows
 
-set.seed(123)
 
-all_combinations <- expand.grid(
-  school = teams_all$School,
-  season = 2004:2025
+valid_teams <- map_df(
+  seasons,
+  ~ cfbd_stats_season_team(year = .x) %>%
+    select(team, conference) %>%
+    distinct() %>%
+    mutate(season = .x)
+)
+n_confs <- valid_teams %>% distinct(conference) %>% nrow()
+teams_per_conf <- floor(target_n / n_confs)
+
+teams_random <- valid_teams %>%
+  group_by(conference) %>%
+  slice_sample(n = teams_per_conf) %>%
+  ungroup()
+
+
+# Basic stats
+teams_random_stats <- map2_df(
+  teams_random$season,
+  teams_random$team,
+  ~ cfbd_stats_season_team(year = .x, team = .y)
 )
 
-teams_random <- all_combinations %>%
-  slice_sample(n = 100)
+# Advanced stats
+teams_random_stats_adv <- map2_df(
+  teams_random$season,
+  teams_random$team,
+  ~ cfbd_stats_season_advanced(year = .x, team = .y)
+)
 
+# Combine
+teams_random_stats <- teams_random_stats %>%
+  left_join(
+    teams_random_stats_adv,
+    by = c("team", "season")
+  )
 
-games_list <- vector("list", nrow(teams_random))
+teams_random_stats <- teams_random_stats %>%
+  mutate(
+    poss_pg = time_of_poss_total / games,
+    pass_comps_pg = pass_comps / games,
+    pass_att_pg = pass_atts / games,
+    net_pass_yds_pg = net_pass_yds / games,
+    pass_td_pg = pass_TDs / games,
+    rush_att_pg = rush_atts / games,
+    rush_yds_pg = rush_yds / games,
+    rush_td_pg = rush_TDs / games,
+    int_pg = interceptions / games,
+    total_yds_pg = total_yds / games,
+    fumbles_lost_pg = fumbles_lost / games,
+    turnovers_pg = turnovers / games,
+    first_downs_pg = first_downs / games,
+    third_downs_pg = third_downs / games,
+    third_down_conversions_pg = third_down_convs / games,
+    fourth_down_conversions_pg = fourth_down_convs / games,
+    penalties_pg = penalties / games,
+    off_plays_pg = off_plays / games,
+    off_drives_pg = off_drives / games
+  )
 
+team_seasons <- teams_random_stats %>%
+  distinct(team, season)
 
+records <- map2_df(
+  team_seasons$season,
+  team_seasons$team,
+  ~ cfbd_game_records(year = .x, team = .y)
+)%>%
+  select(team, year, total_wins, total_losses)
+
+records <- records %>%
+  rename(
+    season = year
+  )
+  
+teams_random_stats <- teams_random_stats %>%
+  select(-conference.y)
+
+teams_random_stats <- teams_random_stats %>%
+  left_join(
+    records,
+    by = c("team", "season")
+  )
+
+write.csv(
+  teams_random_stats,
+  "Data/teams_random_stats.csv",
+  row.names = FALSE
+)
 
 # All Time Best Teams 
 # --------------------------------------------------------------------------------------------------------

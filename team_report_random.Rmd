@@ -1,0 +1,596 @@
+---
+title: "Can Elite College Football Teams Be Identified Statistically?"
+author: "Jake Blumengarten"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    theme: flatly
+runtime: shiny
+resource_files:
+- Data/teams_random_stats.csv
+- Data/test.csv
+- Data/model_df_random.csv
+- Plots/def_field_pos_avg_start.png
+- Plots/def_passing_plays_rate.png
+- Plots/off_drives.png
+- Plots/off_explosiveness.png
+- Plots/off_passing_plays_success_rate.png
+- Plots/off_rushing_plays_rate.png
+- Plots/off_stuff_rate.png
+- Plots/off_total_opportunities.png
+- Plots/offensive_explosiveness_vs_wins.png
+- Plots/points_allowed_pg.png
+- Plots/rushing_yards.png
+- Plots/turnovers.png
+- Plots/yards_for_vs_yards_allowed_per_game.png
+---
+
+```{=html}
+<style>
+/* Keep text readable */
+.main-container {
+  max-width: 1200px !important;
+}
+
+/* Allow plots & tables to expand */
+.plot-container,
+.table-container {
+  max-width: 1600px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* Slightly better typography */
+p {
+  line-height: 1.6;
+  font-size: 16px;
+}
+
+h1, h2, h3 {
+  margin-top: 1.5em;
+}
+</style>
+```
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+
+teams_random_stats <- read.csv(here("Data", "teams_random_stats.csv"))
+model_df_random <- read.csv(here("Data", "model_df_random.csv"))
+test <- read.csv(here("Data", "test_random.csv"))
+lasso_lm <- readRDS("Models/random_sample.rds")
+selected_vars <- names(coef(lasso_lm))[-1]
+```
+
+```{r diagnostics-setup, include = FALSE}
+n <- nobs(lasso_lm)
+p <- length(coef(lasso_lm))
+
+# MSE
+(MSE <- summary(lasso_lm)$sigma^2)
+
+# PRESS
+PRESS <- function(model) {
+  e  <- residuals(model)
+  h  <- hatvalues(model)
+  sum((e / (1 - h))^2)
+}
+(PRESS_val <- PRESS(lasso_lm))
+(PRESS_avg <- PRESS_val / n)
+
+# cutoff values
+(cutoff <- (2 * p) / n)
+(quantity <- qf(0.50, df1 = p, df2 = n - p))
+```
+
+## Research Quesiton and Hypothesis
+
+Can we predict how many wins a team will have in a given college football season based on team statistics? This is what this project aims to answer. I will be building a linear regression model to predict total wins in a season based on various team statistics. My hypothesis is that certain team statistics, such as offensive efficiency and defensive performance, will be significant predictors of total wins in a season.
+
+## Data Sources and Limitations
+
+- A `talent` variable is available that is a talent composite sourced from 247 rankings, but it is only available from 2015-present. I think this would be a good predictor of wins, but I can't use it unless I take out teams from this already limited study.
+
+## Data Information
+
+This project is all about my ability to work with season data in college football. I started off by pulling around 100 teams from 2004-2025 from a uniform distribution of conferences. I used functions `cfbd_stats_season_team ()` and `cfbd_stats_season_advanced()` from the `cfbfastR` package to get season data.
+
+```{r, echo = FALSE}
+
+numeric_cols <- teams_random_stats %>%
+  select(any_of(selected_vars)) %>%
+  select(where(is.numeric))
+
+# Compute correlation matrix
+cor_matrix <- cor(numeric_cols, use = "pairwise.complete.obs")
+
+# Convert to a data frame for DT
+cor_df <- as.data.frame(cor_matrix)
+cor_df <- tibble::rownames_to_column(cor_df, var = "Variable")
+
+# Render as interactive datatable
+DT::datatable(
+  cor_df,
+  extensions = c("Buttons"),
+  options = list(
+    pageLength = 18,
+    dom = "Bfrtip",
+    buttons = c("copy", "csv", "excel"),
+    scrollX = TRUE
+  ),
+  caption = "Correlation Matrix of Numeric Variables"
+)
+```
+
+```{r, echo = FALSE}
+# # Get numeric columns
+# numeric_cols <- names(teams_random_stats)[sapply(teams_random_stats, is.numeric)]
+# 
+# # Make folder if it doesn't exist
+# if(!dir.exists("Plots/random_sample_hist")) dir.create("Plots/random_sample_hist", recursive = TRUE)
+# 
+# # Loop and save
+# for(col_name in numeric_cols){
+#   p <- ggplot(teams_random_stats, aes_string(x = col_name)) +
+#     geom_histogram(bins = 30, fill = "steelblue", color = "black") +
+#     theme_minimal() +
+#     ggtitle(paste("Distribution of", col_name))
+#   
+#   ggsave(
+#     filename = paste0("Plots/random_sample_hist/", col_name, ".png"),
+#     plot = p,
+#     width = 8,
+#     height = 6,
+#     dpi = 300
+#   )
+# }
+```
+
+```{r, echo = FALSE}
+plot_choices <- c(
+  "Rush Attempts" = "Plots/random_sample_hist/rush_atts.png",
+  "Rushing TDs" = "Plots/random_sample_hist/rush_TDs.png",
+  "First Downs" = "Plots/random_sample_hist/first_downs.png",
+  "Third Down Conversions" = "Plots/random_sample_hist/third_down_convs.png",
+  "Passes Intercepted" = "Plots/random_sample_hist/passes_intercepted.png",
+  "Intercepted Return Yards" = "Plots/random_sample_hist/passes_intercepted_yds.png",
+  "Offensive Passing Plays PPA" = "Plots/random_sample_hist/off_passing_plays_ppa.png",
+  "Defensive PPA" = "Plots/random_sample_hist/def_ppa.png",
+  "Defensive Field Position Average Predicted Points" = "Plots/random_sample_hist/def_field_pos_avg_predicted_points.png",
+  "Defensive Passing Downs PPA" = "Plots/random_sample_hist/def_passing_downs_ppa.png",
+  "Defensive Passing Downs Total PPA" = "Plots/random_sample_hist/def_passing_downs_total_ppa.png",
+  "Defensive Rushing Plays Rate" = "Plots/random_sample_hist/def_rushing_plays_rate.png",
+  "Defensive Passing Plays PPA" = "Plots/random_sample_hist/def_passing_plays_ppa.png",
+  "Defensive Passing Plays Success Rate" = "Plots/random_sample_hist/def_passing_plays_success_rate.png",
+  "Int_pg" = "Plots/random_sample_hist/int_pg.png",
+  "Turnovers_pg" = "Plots/random_sample_hist/turnovers_pg.png",
+  "Third Downs_pg" = "Plots/random_sample_hist/third_downs_pg.png",
+  "Penalties_pg" = "Plots/random_sample_hist/penalties_pg.png"
+)
+
+selectInput(
+inputId = "plot_select",
+label = "Select Variable:",
+choices = plot_choices
+)
+```
+
+```{=html}
+<div style="max-width: 800px; margin: auto;">
+```
+
+```{r, echo = FALSE}
+# Output
+
+renderImage({
+  list(
+    src = input$plot_select,
+    contentType = "image/png",
+    alt = "Histogram",
+    width = "100%",
+    height = "500px"
+  )
+}, deleteFile = FALSE)
+```
+
+```{=html}
+</div>
+<br><br><br>
+```
+
+
+### Season Data
+
+```{r, echo = FALSE}
+season_core_cols <- c(
+  "team",
+  "season",
+  "conference.x",
+  "total_wins"
+)
+
+DT::datatable(
+  teams_random_stats,
+  filter = "top",
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 10,
+    dom = "Bfrtip",
+    buttons = c("colvis", "copy", "csv"),
+    scrollX = TRUE,
+    columnDefs = list(
+      list(
+        targets = which(!names(teams_random_stats) %in% season_core_cols) - 1,
+        visible = FALSE
+      )
+    )
+  ),
+  caption = "Season-Level Team Statistics (Additional variables available via column selector)"
+)
+```
+
+### Variables in my Model
+
+All of these plots have total_wins on the Y-axis because my model attempts to predict total number of wins in a season for any given team.
+
+```{r, echo = FALSE}
+# List of available plots
+plot_choices <- c(
+  "Rush Attempts" = "Plots/random_sample/rush_atts.png",
+  "Rushing TDs" = "Plots/random_sample/rush_TDs.png",
+  "First Downs" = "Plots/random_sample/first_downs.png",
+  "Third Down Conversions" = "Plots/random_sample/third_down_convs.png",
+  "Passes Intercepted" = "Plots/random_sample/passes_intercepted.png",
+  "Intercepted Return Yards" = "Plots/random_sample/passes_intercepted_yds.png",
+  "Offensive Passing Plays PPA" = "Plots/random_sample/off_passing_plays_ppa.png",
+  "Defensive PPA" = "Plots/random_sample/def_ppa.png",
+  "Defensive Field Position Average Predicted Points" = "Plots/random_sample/def_field_pos_avg_predicted_points.png",
+  "Defensive Passing Downs PPA" = "Plots/random_sample/def_passing_downs_ppa.png",
+  "Defensive Passing Downs Total PPA" = "Plots/random_sample/def_passing_downs_total_ppa.png",
+  "Defensive Rushing Plays Rate" = "Plots/random_sample/def_rushing_plays_rate.png",
+  "Defensive Passing Plays PPA" = "Plots/random_sample/def_passing_plays_ppa.png",
+  "Defensive Passing Plays Success Rate" = "Plots/random_sample/def_passing_plays_success_rate.png",
+  "Int_pg" = "Plots/random_sample/int_pg.png",
+  "Turnovers_pg" = "Plots/random_sample/turnovers_pg.png",
+  "Third Downs_pg" = "Plots/random_sample/third_downs_pg.png",
+  "Penalties_pg" = "Plots/random_sample/penalties_pg.png"
+)
+
+selectInput(
+  inputId = "plot_select",
+  label = "Select Plot:",
+  choices = plot_choices
+)
+```
+
+```{=html}
+<div style="max-width: 800px; margin: auto;">
+```
+
+```{r, echo = FALSE}
+# Output
+
+renderImage({
+  list(
+    src = input$plot_select, # <- just use the full path from the selectInput
+    contentType = "image/png",
+    alt = "Model Plot",
+    width = "100%",
+    height = "500px"
+  )
+}, deleteFile = FALSE)
+```
+
+```{=html}
+</div>
+<br><br><br>
+```
+
+## Building a Regression Model
+
+Variable selection followed a three-stage procedure: LASSO regression was used for initial feature screening, multicollinearity was assessed using variance inflation factors (VIF), and backward elimination selection based on AIC was applied to obtain this final model:
+
+```{r}
+selected_vars
+```
+
+Where:
+
+**Offensive (O)**
+
+- `rush_atts` = Rushing Attempts in a season
+- `rush_TDs` = Rushing Touchdowns in a season
+- `first_downs` = Number of first downs gained in a season
+- `third_down_convs` = Number of third down conversions in a season
+- `off_passing_plays_ppa` = Points per attempt on offensive passing plays (season total weighted by attempts)
+
+**Defensive (D)**
+
+- `passes_intercepted` = Number of passes intercepted by the team’s defense in a season
+- `def_ppa` = Average points allowed per defensive play (season total)
+- `def_field_pos_avg_predicted_points` = Predicted points allowed per drive based on starting field position (season total average)
+- `def_passing_downs_ppa` = Points allowed per defensive passing down play (season total average)
+- `def_passing_downs_total_ppa` = Total points allowed on all defensive passing plays (season total)
+- `def_rushing_plays_rate` = Proportion of opponent rushing plays relative to total plays faced
+- `def_passing_plays_ppa` = Points allowed per opponent passing play (season total average)
+- `def_passing_plays_success_rate` = Success rate of opponent passing plays against the defense
+
+**Per-Game**
+
+- `int_pg` = Interceptions per game (defense forcing turnovers)
+- `turnovers_pg` = Turnovers per game committed by the team (fumbles lost + interceptions)
+- `third_downs_pg` = Third downs per game (offense attempting)
+- `penalties_pg` = Penalties per game (offense or team total)
+
+And: 
+
+- `ppa` is equivalent to Expected Points Added (EPA) per play, which is defined as the change in Expected Points from the start to end of a play. 
+
+- Expected Points is defined as Assigns point values to field positions based on down, distance, and yard line. A negative value means the opponent is expected to score next.
+
+- `passing_downs` is defined as 2nd down with 7+ yards to go or 3rd/4th down with 5+ yards to go.
+
+### Training Dataset
+
+I gathered around 100 teams at random from each season between 2004 and 2025 to use as my testing dataset:
+
+```{r training_data_table, echo=FALSE}
+DT::datatable(
+  model_df_random,
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Table 3: Training Dataset"
+)
+```
+
+Using this data, I trained the linear regression model.
+
+```{r lasso_feature_selection, echo = FALSE}
+final_model_summary <- tidy(lasso_lm) %>%
+  mutate(
+    estimate = round(estimate, 3),
+    std.error = round(std.error, 3),
+    statistic = round(statistic, 2),
+    p.value = round(p.value, 4)
+  )
+
+final_model_summary %>%
+  gt() %>%
+  tab_header(
+    title = "Linear Regression Results: Wins Model",
+    subtitle = "Dependent Variable: Total Wins"
+  ) %>%
+  cols_label(
+    term = "Variable",
+    estimate = "Estimate",
+    std.error = "Std. Error",
+    statistic = "t Statistic",
+    p.value = "p-value"
+  ) %>%
+  fmt_markdown(columns = term) %>%
+  tab_source_note(
+    source_note = "Coefficients estimated using training data only."
+  )
+```
+
+### Test Dataset
+
+These are around 35 seasons not included in the training dataset that the model attempted to predict:
+
+```{r, echo = FALSE}
+DT::datatable(
+  test,
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Table 4: True vs Predicted Wins"
+)
+```
+
+### Testing the Model for Assumptions
+
+The performance and validity of the regression model were evaluated using a series of diagnostic plots and statistical measures (see Appendix for full diagnostic tables and values). Together, these diagnostics assess whether the model meets the core linear regression assumptions: linearity, constant variance, independence, normality of residuals, and lack of undue influence from individual observations.
+
+#### Residuals
+
+The test-set plot of actual versus predicted wins shows points clustered tightly around the 45-degree reference line, indicating that the model generalizes well beyond the training data. There is no systematic over- or under-prediction, and deviations from the line are modest. This visual result is reinforced quantitatively by the PRESS statistic `r round(PRESS_avg, 3)`, which yields an average prediction error ($\frac{PRESS}{n}$) nearly identical to the model’s in-sample error variance (MSE = `r MSE`). The small gap between $\frac{PRESS}{n}$ and MSE is `r PRESS_avg - MSE` indicating strong predictive stability and minimal overfitting.
+
+```{r, echo = FALSE}
+plot(
+  test$total_wins,
+  test$predicted_wins,
+  xlab = "Actual Wins",
+  ylab = "Predicted Wins",
+  main = "Test Dataset Predictions"
+)
+abline(0, 1, col = "red", lwd = 2)
+```
+
+```{r, echo = FALSE}
+plot(
+  lasso_lm$fitted.values,
+  residuals(lasso_lm),
+  xlab = "Fitted Values",
+  ylab = "Residuals",
+  main = "Residuals vs Fitted (Training Data)"
+)
+abline(h = 0, col = "red", lwd = 2)
+```
+
+The Residuals-vs-Fitted plot does not display any curved pattern or structure; the residuals remain centered around zero across the full range of fitted values. This supports both linearity and  constant variance. A few moderately large residuals appear, but none exceed reasonable thresholds or suggest model misspecification.
+
+#### Influential Points (X and Y)
+
+```{r, echo = FALSE}
+plot(
+  hatvalues(lasso_lm),
+  rstudent(lasso_lm),
+  xlab = "Hat Values",
+  ylab = "Studentized Residuals",
+  pch = 19,
+  xlim = c(0, max(hatvalues(lasso_lm)) + 0.05)
+)
+abline(v = c(cutoff, 2), col = "red", lty = 2, lwd = 2)
+abline(h = c(-2, 2), col = "blue", lty = 2)
+
+
+hat_vals <- hatvalues(lasso_lm)
+
+high_leverage <- hat_vals[hat_vals > cutoff]
+high_leverage
+
+high_leverage_teams <- teams_random_stats[c(42, 66, 92, 93, 94, 95), c("team", "season")]
+
+high_leverage_teams %>%
+  kable(caption = "Table 5: High-Leverage Observations") %>%
+  kable_styling(
+    font_size = 14,
+    full_width = FALSE,
+    position = "center"
+  )
+```
+
+The leverage–residual diagnostic identifies potential high-leverage observations using the threshold $\frac{2p}{n}$, which is `r round(cutoff, 3)`. A handful of points exceed this line—unsurprising given the small sample size—but their studentized residuals remain well within ±2. These observations do not violate assumptions and do not threaten the model’s stability.
+
+#### Cook's Distance 
+
+```{r, echo = FALSE}
+# Cook's Distance plot
+plot(
+  cooks.distance(lasso_lm),
+  ylab = "Cook's distance",
+  xlab = "Index",
+  pch = 19
+)
+abline(h = quantity, col = "red", lty = 2)
+```
+
+Cook’s Distance results tell a similar story. The highest Cook’s D value is approximately 0.16, far below concern levels `r quantity`. When compared against the conservative `r quantity` reference value (Appendix), several points surpass the threshold, but none approach levels associated with influential observations. Thus, no single data point exerts undue influence on the model’s estimates.
+
+#### Overall Assesment
+
+Across all diagnostics—residual patterns, leverage, Cook’s Distance, PRESS, MSE, and cutoff comparisons—the model satisfies the standard regression assumptions. It shows no evidence of severe violations, overfitting, or influential outliers. The agreement between $\frac{PRESS}{n}$ and MSE confirms strong predictive reliability, and the influence metrics indicate that the fitted regression is stable and robust to individual observations.
+
+## Conclusion
+
+The linear regression model developed in this analysis effectively predicts total wins for college football teams based on selected team statistics. The model demonstrates strong predictive performance on unseen test data, with diagnostic assessments confirming that key regression assumptions are met. The identified predictors—rushing attempts, rushing touchdowns, first downs, third down conversions, interceptions, offensive passing plays PPA, and various defensive metrics—offer valuable insights into the factors that contribute to a team’s success in terms of wins.
+
+## References
+
+Gilani, S., Easwaran, A., Lee, J., & Hess, E. (2021). 
+*cfbfastR: The SportsDataverse's R package for college football data.* 
+https://cfbfastR.sportsdataverse.org/.
+
+OpenAI. (2025). *ChatGPT (Version 5.1)* [Large language model]. https://chat.openai.com/
+
+## Appendix
+
+```{r appendix_lasso, echo = TRUE}
+library(glmnet)
+library(dplyr)
+library(car)
+library(purrr)
+
+summary(lasso_lm)
+
+vif(lasso_lm) # Multicollinearity
+
+# ============================================================
+# Model performance
+# ============================================================
+
+(rmse <- sqrt(mean((test$total_wins - test$predicted_wins)^2)))
+
+anova(lasso_lm)
+
+summary(lasso_lm)$r.squared
+summary(lasso_lm)$adj.r.squared
+cor(test$total_wins, test$predicted_wins)^2
+
+# ============================================================
+# 10. Plots
+# ============================================================
+
+qqnorm(lasso_lm$residuals)
+
+(res <- resid(lasso_lm))
+(MSE <- summary(lasso_lm)$sigma^2)
+
+(stud_res <- rstudent(lasso_lm)) # extreme in y?
+
+hatvalues(lasso_lm) # extreme in x?
+(p <- length(selected_vars))
+(n <- nrow(teams_random_stats))
+(cutoff <- (2*p)/n)
+
+plot(hatvalues(lasso_lm), rstudent(lasso_lm),
+      xlab = "Leverage (hat values)",
+      ylab = "Studentized Residuals",
+      pch = 19)
+abline(v = cutoff, col = "red", lty = 2)
+abline(h = c(-2, 2), col = "blue", lty = 2)
+
+# Studentized residuals plot
+plot(
+  stud_res,
+  pch = 19,
+  col = "black",
+  xlab = "Observation",
+  ylab = "Studentized Residual",
+  main = "Studentized Residuals"
+)
+
+# Add reference lines
+abline(h = 0, lwd = 2, col = "gray40")
+abline(h = c(-2, 2), lty = 2, col = "red")
+
+# Cooks Distance 
+cooks.distance(lasso_lm)
+# Median of F-distribution
+quantity <- qf(0.50, df1 = p, df2 = n - p)
+
+# Cook's Distance plot
+plot(
+  cooks.distance(lasso_lm),
+  ylab = "Cook's distance",
+  xlab = "Index",
+  pch = 19
+)
+
+abline(h = quantity, col = "red", lty = 2)
+
+## PRESS
+PRESS <- function(model) {
+  e  <- residuals(model)
+  h  <- hatvalues(model)
+  sum((e / (1 - h))^2)
+}
+
+(PRESS_val <- PRESS(lasso_lm)/n) 
+```
+
+---
+
+## Thank You!
+
+This report used OpenAI’s ChatGPT (Version 5.1, 2025) for assistance in R code debugging, formatting model output tables, and refining methodological descriptions.
+
+Hello! I am an aspiring data analyst that loves sports, and I am putting together projects to showcase skills I am learning. I hope you enjoy! Here are some of my other projects and accounts if you are interested:
+
+- www.linkedin.com/in/jake-blumengarten
+- https://github.com/JakeBlumengarten?tab=repositories
+- blumengartenjake@gmail.com

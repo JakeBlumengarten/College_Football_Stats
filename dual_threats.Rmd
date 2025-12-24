@@ -1,0 +1,883 @@
+---
+title: "Dual Threat Quarterbacks"
+author: "Jake Blumengarten"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    df_print: paged
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+library(dplyr)
+players <- read.csv("Data/players_random_full.csv") 
+# %>% filter(conference %in% c("Big Ten", "SEC", "ACC", "Big 12")) %>% na.omit()
+forward_model <- readRDS("forward_model.rds")
+
+library(DT)
+library(ggplot2)
+library(cfbplotR)
+library(cfbfastR)
+library(purrr)
+library(readr)
+library(skimr)
+library(tidyr)
+library(effectsize)
+library(car)
+library(ggrepel)
+library(broom)
+library(kableExtra)
+library(tibble)
+library(knitr)
+```
+## Introduction
+
+### Motivation 
+
+The landscape of college football has undergone significant transformations over the past two decades, particularly with the rise of dual-threat quarterbacks. These versatile athletes possess the ability to excel in both passing and rushing, challenging traditional notions of quarterback play. The emergence of dual-threat quarterbacks has not only altered offensive strategies but also influenced team dynamics and overall performance.
+
+### Research Question
+
+**How has the emergence of dual-threat quarterbacks affected total offensive efficiency in Power Five conferences (Big Ten, SEC, ACC, and Big 12) from 2006–2025?**
+
+### Why dual-threat QBs matter historically
+
+The evolution of the quarterback position in college football has been marked by a significant shift towards dual-threat capabilities. Historically, quarterbacks were primarily evaluated based on their passing skills, with a focus on arm strength, accuracy, and decision-making. However, the rise of dual-threat quarterbacks has introduced a new dimension to the position, emphasizing mobility and the ability to make plays with both the arm and the legs.
+
+## Data 
+
+### Source
+The dataset used in this analysis is sourced from a comprehensive compilation of college football player statistics, available at [CFB Data](https://collegefootballdata.com/). This dataset includes detailed performance metrics for players across various seasons, focusing on key offensive statistics such as passing and rushing touchdowns.
+
+### Sample
+
+```{r}
+
+DT::datatable(
+  players,
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Sample of Player Data"
+)
+```
+
+### Key Variables
+
+- `passing_td`: Number of passing touchdowns by the quarterback in a season.
+- `rushing_td`: Number of rushing touchdowns by the quarterback in a season.
+- `passing_yds`: Total passing yards by the quarterback in a season.
+- `rushing_yds`: Total rushing yards by the quarterback in a season.
+
+### Limitations
+
+- `cfbfastR` didn't have much roster informaiton, so I had to filter out over half of my player data because I could not join team with their player id.
+- A `talent` variable (e.g., recruiting rank) would be useful to control for QB skill level, but the data is not readily available for all players in the dataset. I ended up using ESPN's fpi ratings for team talent instead.
+
+## What does "Dual Threat" Even Mean?
+
+A "dual-threat" quarterback is one who excels in both passing and rushing, making them a versatile and dynamic player on the field. These quarterbacks can effectively lead the offense through the air while also posing a significant threat on the ground. This dual capability forces defenses to account for multiple dimensions of play, often leading to more complex defensive strategies.
+To quantify the dual-threat nature of quarterbacks, we can look at two key statistics:
+
+1. **Rushing Yards**: This metric indicates the number of yards rushed by a quarterback. A higher number of rushing yards suggests that the quarterback is adept at using their mobility to contribute to the team's scoring efforts.
+
+2. **Passing Yards**: This metric reflects the number of yards thrown by a quarterback. A higher number of passing yards indicates proficiency in leading the passing game and effectively distributing the ball to teammates.
+
+By analyzing both rushing and passing yards, we can identify quarterbacks who are proficient in both areas, thereby classifying them as dual-threat quarterbacks. These players are valuable assets to their teams, as they can adapt to various offensive strategies and exploit defensive weaknesses.
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+# Compute 75th percentiles for reference lines
+rush_75 <- quantile(players$rushing_yds, 0.75, na.rm = TRUE)
+pass_75 <- quantile(players$passing_yds, 0.75, na.rm = TRUE)
+
+players %>%
+  ggplot(aes(x = rushing_yds, y = passing_yds, color = qb_type)) +
+  
+  # Scatter points
+  geom_point(alpha = 0.7, size = 3) +
+  
+  # 75th percentile reference lines
+  geom_vline(xintercept = rush_75, linetype = "dashed", color = "red") +
+  geom_hline(yintercept = pass_75, linetype = "dashed", color = "red") +
+  
+  # Optional quadrant labels
+  annotate("text", x = 1000, y = 4600, label = "Dual Threat", color = "red", fontface = "bold") +
+  annotate("text", x = 1100, y = 1100, label = "Pure Runners", color = "purple", fontface = "bold") +
+  annotate("text", x = -100, y = 4800, label = "Pocket Passers", color = "mediumblue", fontface = "bold") +
+  
+  # Axis labels and title
+  labs(
+    title = "Rushing Yards vs. Passing Yards for Quarterbacks (2006–2025)",
+    x = "Rushing Yards",
+    y = "Passing Yards",
+    color = "QB Type"
+  ) +
+  
+  # Scales
+  scale_x_continuous(breaks = seq(min(players$rushing_yds, na.rm = TRUE) - 1, max(players$rushing_yds, na.rm = TRUE) + 10, by = 100)) +
+  scale_y_continuous(breaks = seq(min(players$passing_yds), max(players$passing_yds, na.rm = TRUE) + 50, by = 500)) +
+  
+  # Theme
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1),  # Angle the x-axis labels
+    axis.text.y = element_text(angle = 0)                # Keep y-axis labels horizontal
+  )
+
+
+```
+
+Dual threats are identified as those quarterbacks who exceed the 75th percentile in both rushing and passing touchdowns. Pocket passers excel in passing touchdowns but fall below the threshold for rushing touchdowns (only in 75th percentile of passing TD), while pure runners achieve high rushing touchdown numbers but do not meet the passing touchdown criterion (only in 75th percentile of rushing TD).
+
+## Descriptive Statistics
+
+```{r}
+# players <- players %>%
+#   mutate(
+#     top_25_rushing = quantile(rushing_yds, 0.75, na.rm = TRUE),
+#     top_25_passing = quantile(passing_yds, 0.75, na.rm = TRUE),
+# 
+#     qb_type = case_when(
+#       # Dual Threat: above 75th percentile in both
+#       rushing_yds >= top_25_rushing & passing_yds >= top_25_passing ~ "Dual Threat",
+# 
+#       # Pocket Passer: high passing, low rushing
+#       passing_yds >= top_25_passing & rushing_yds < top_25_rushing ~ "Pocket Passer",
+# 
+#       # Pure Runner: high rushing, low passing
+#       rushing_yds >= top_25_rushing & passing_yds < top_25_passing ~ "Pure Runner",
+# 
+#       # Otherwise
+#       TRUE ~ "Other"
+#     )
+#   ) %>%
+#   select(-top_25_rushing, -top_25_passing)
+# 
+# 
+# write_csv(players, "Data/players_random_full.csv")
+```
+
+### Quarterback Type Distribution
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players %>%
+  count(qb_type) %>%
+  ggplot(aes(x = qb_type, y = n, fill = qb_type)) +
+  geom_col() +
+  geom_text(aes(y = 10, label = n)) +
+  labs(
+    title = "Quarterback Type Distribution (2006–2025)",
+    x = "Quarterback Type",
+    y = "Number of Player-Seasons"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+
+### Distribution of Passing and Rushing Touchdowns by QB Type
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players %>%
+  ggplot(aes(x = passing_td, fill = qb_type)) +
+  geom_bar() +
+  labs(
+    x = "Passing Touchdowns",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme()
+```
+### Distribution of Rushing Touchdowns by QB Type
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players %>%
+  ggplot(aes(x = rushing_td, fill = qb_type)) +
+  geom_bar() +
+  labs(
+    x = "Rushing Touchdowns",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  theme()
+```
+
+### Statistical Leader Plots
+
+```{r}
+knitr::include_graphics(c(
+  "Plots/player_plots/top_10_passing_td.png",
+  "Plots/player_plots/top_10_rushing_td.png",
+  "Plots/player_plots/top_10_passing_pct.png",
+  "Plots/player_plots/top_10_passing_ypa.png",
+  "Plots/player_plots/top_10_rushing_ypc.png"
+))
+```
+
+
+## Do Dual Threat QBs Win More Games?
+
+To assess the impact of dual-threat quarterbacks on team success, we will analyze the average number of wins for teams with dual-threat quarterbacks compared to those without. This analysis will help us understand whether having a dual-threat quarterback correlates with better team performance in terms of wins.
+
+```{r}
+# # -----------------------------
+# # 1. Pull team game records (2006–2025)
+# # -----------------------------
+# years <- 2006:2025
+# 
+# all_records_df <- bind_rows(
+#   lapply(years, function(y) {
+#     cfbd_game_records(year = y) %>% mutate(year = y)
+#   })
+# ) %>%
+#   select(year, team, total_wins)
+# 
+# # -----------------------------
+# # 2. Map players to their teams
+# # -----------------------------
+# # Make a tibble of player_ids and years
+# player_years <- tibble(
+#   athlete_id = as.character(players$athlete_id),
+#   year = players$year
+# )
+# 
+# # Pull rosters for all relevant years
+# all_rosters <- map_df(unique(player_years$year), ~cfbd_team_roster(year = .x, team = NULL)) %>%
+#   mutate(athlete_id = as.character(athlete_id))
+# 
+# # Filter for the players in our dataset and remove duplicates
+# player_teams <- all_rosters %>%
+#   inner_join(player_years, by = c("athlete_id", "year")) %>%
+#   distinct(athlete_id, year, .keep_all = TRUE) %>%
+#   select(athlete_id, team, year)
+# 
+# # -----------------------------
+# # 3. Join team info and wins back to players
+# # -----------------------------
+# players <- players %>%
+#   mutate(athlete_id = as.character(athlete_id)) %>%
+#   left_join(player_teams, by = c("athlete_id", "year"))
+# 
+# players <- players%>%
+#   left_join(all_records_df, by = c("year", "team"))
+# 
+# write_csv(players, "Data/players_random_full.csv")
+```
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players %>%
+  group_by(qb_type) %>%
+  summarize(avg_wins = mean(total_wins, na.rm = TRUE), .groups = "drop") %>%
+  ggplot(aes(x = qb_type, y = avg_wins, fill = qb_type)) +
+  geom_col() +
+  labs(
+    title = "Average Team Wins by Quarterback Type (2006–2025)",
+    x = "Quarterback Type",
+    y = "Average Team Wins"
+  ) +
+  scale_y_continuous(breaks = seq(0, 15, by = 1)) +
+  theme_minimal()
+```
+
+By this graph, we can see that teams with dual-threat quarterbacks have a higher average number of wins compared to teams with other types of quarterbacks. This suggests that dual-threat quarterbacks may contribute positively to team success.
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players %>%
+  filter(!is.na(total_wins), !is.na(qb_type)) %>%
+  ggplot(aes(x = qb_type, y = total_wins, fill = qb_type)) +
+  geom_boxplot(alpha = 0.6, outlier.shape = NA) +
+  geom_jitter(width = 0.15, alpha = 0.25, size = 1) +
+  labs(
+    title = "Team Wins by Quarterback Type (2006–2025)",
+    x = "Quarterback Type",
+    y = "Team Wins"
+  ) +
+  scale_y_continuous(breaks = seq(0, 15, 1)) +
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+Here, we see a boxplot representation of team wins based on quarterback type. The boxplot illustrates that teams with dual-threat quarterbacks not only have a higher median number of wins but also exhibit more success compared to teams with non-dual-threat quarterbacks. This further emphasizes the potential advantage that dual-threat quarterbacks bring to their teams in terms of overall performance.
+
+**Correlation of dual threat to total wins: `r cor(players$dual_threat == "Dual Threat", players$total_wins, use = "complete.obs")`**
+
+## Offensive Efficiency Analysis
+
+```{r}
+# # Pull advanced team stats for all years
+# adv_stats_all <- map_df(years, ~ 
+#   cfbd_stats_season_advanced(year = .x, excl_garbage_time = TRUE) %>%
+#     mutate(year = .x)
+# ) %>%
+#   select(team, year, off_explosiveness, off_success_rate, off_pts_per_opp)
+# 
+# players <- players %>%
+#   left_join(adv_stats_all, by = c("team", "year"))
+# 
+# write_csv(players, "Data/players_random_full.csv")
+```
+
+- `off_pts_per_opp` = Offense points per scoring opportunity (All offensive drives that cross the opponent’s 40-yard line) 
+- `off_explosiveness` = Offense explosiveness rate (Average EPA on successful plays. Uses the site's custom PPA model)
+- `off_success_rate` = Offense success rate (Success Rate - Measures play efficiency. A play is considered successful if it: Results in a touchdown, Gains ≥50% of yards needed on 1st down, Gains ≥70% of yards needed on 2nd down, Gains 100% of yards needed on 3rd/4th down)
+
+```{r}
+players %>%
+  skim()
+```
+
+### Offensive Efficiency Metrics by QB Type
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+players_long <- players %>%
+  select(qb_type, off_pts_per_opp, off_explosiveness, off_success_rate) %>%
+  pivot_longer(
+    cols = c(off_pts_per_opp, off_explosiveness, off_success_rate),
+    names_to = "metric",
+    values_to = "value"
+  )
+
+ggplot(players_long, aes(x = qb_type, y = value, fill = qb_type)) +
+  geom_boxplot(outlier.alpha = 0.3) +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Offensive Efficiency Metrics by Quarterback Type",
+    x = "Quarterback Type",
+    y = "Metric Value"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.text.x = element_text(angle = 30, hjust = 1)
+  )
+
+```
+
+From the boxplots above, we can observe that teams with dual-threat quarterbacks tend to have higher values in key offensive efficiency metrics compared to teams with other types of quarterbacks. Specifically, dual-threat quarterbacks are associated with better performance in points per scoring opportunity, explosiveness, and success rate. This suggests that dual-threat quarterbacks contribute significantly to the overall offensive effectiveness of their teams.
+
+```{r}
+players %>%
+  group_by(conference, qb_type) %>%
+  summarise(
+    across(
+      c(off_pts_per_opp, off_explosiveness, off_success_rate),
+      ~ round(mean(.x, na.rm = TRUE), 3),
+      .names = "{.col}"
+    ),
+    .groups = "drop"
+  ) %>%
+  datatable(
+  players,
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Sample of Player Data"
+)
+
+```
+
+### Average Offensive Efficiency by QB Type
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+plot_df <- players %>%
+  group_by(qb_type) %>%
+  summarise(
+    across(
+      c(off_pts_per_opp, off_explosiveness, off_success_rate),
+      ~ mean(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(
+    -qb_type,
+    names_to = "metric",
+    values_to = "average"
+  )
+
+ggplot(plot_df, aes(x = qb_type, y = average, fill = qb_type)) +
+  geom_col() +
+  facet_wrap(~ metric, scales = "free_y") +
+  labs(
+    title = "Average Offensive Efficiency by Quarterback Type",
+    x = "Quarterback Type",
+    y = "Average Value"
+  ) +
+  theme_minimal() +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+From the bar charts above, we can see that teams with dual-threat quarterbacks consistently outperform those with other quarterback types across all three offensive efficiency metrics. This further reinforces the notion that dual-threat quarterbacks play a crucial role in enhancing a team's offensive capabilities.
+
+
+## Regression Analysis
+
+Here is the model I created using forward selection:
+
+```{r}
+tidy(forward_model) %>%
+  mutate(across(where(is.numeric), round, 3)) %>%
+  kable(
+    caption = "Forward Selection Regression Results for Passing QBR",
+    col.names = c("Term", "Estimate", "Std. Error", "t value", "p value")
+  ) %>%
+  kable_styling(full_width = FALSE)
+
+```
+
+Takeaways: 
+
+- Dual-Threat Status Has an Independent Effect on QBR
+  - The coefficient on Not Dual Threat (β = 2.225, p = 0.039) indicates a statistically significant difference in QBR between dual-threat and non–dual-threat quarterbacks, even after controlling for passing efficiency, rushing production, team quality, and conference.
+  - This suggests that quarterback style captures meaningful performance differences beyond traditional box-score statistics.
+
+- Rushing Production Improves QBR — But Efficiency Matters More Than Volume
+  - Rushing yards, rushing touchdowns, and yards per carry are all positively associated with QBR, while rushing attempts are negatively associated.
+  - This pattern indicates diminishing returns to rushing volume and implies that QBR rewards efficient, situational mobility rather than frequent rushing.
+  - These results are consistent with the modern dual-threat quarterback adding value through selective and effective rushing.
+
+- Passing Efficiency Dominates Passing Volume
+  - Metrics capturing efficiency and decision-making—such as yards per attempt, passing touchdowns, and completions—exhibit strong positive relationships with QBR.
+  - In contrast, passing attempts are not statistically significant, and passing yards are negatively associated once efficiency is controlled for, reflecting redundancy and diminishing returns.
+  - This reinforces that quarterback performance is driven by how yards are generated, not simply total output.
+
+- Team Context Matters, but Does Not Explain Away Quarterback Style
+  - Team quality, as measured by FPI, is positively associated with QBR, confirming that quarterbacks benefit from stronger supporting contexts.
+  - Conference-level effects persist, with Big 12 and SEC quarterbacks exhibiting lower average QBR relative to the reference group, holding other factors constant.
+  - Importantly, the dual-threat effect remains significant after accounting for these contextual factors.
+
+- Offensive Success Rate Validates the Model
+  - Offensive success rate is strongly and positively related to QBR, linking individual quarterback performance to team-level efficiency.
+  - This alignment supports the validity of QBR as a meaningful measure of quarterback effectiveness in this analysis.
+  
+
+### Why QBR
+
+I chose to try and predict QBR because it is a comprehensive measure of quarterback performance that accounts for various aspects of the game, including passing, rushing, and situational effectiveness. Unlike traditional statistics like passing yards or touchdowns, QBR provides a more holistic view of a quarterback's contribution to the team's success. By using QBR as the dependent variable in the regression analysis, we can better understand how different factors, including quarterback type, influence overall performance on the field.
+
+I also added weather variables (average temperature, humidity, wind speed, and pressure; percentage of games played indoors), team FPI rating, and recruiting points to control for external factors that may influence quarterback performance.
+
+```{r}
+# fpi_list <- list()
+# 
+# for (yr in 2006:2025) {
+#   fpi_list[[as.character(yr)]] <- espn_ratings_fpi(year = yr)
+# }
+# 
+# fpi_df <- bind_rows(fpi_list) %>%
+#   select(team_name, year, fpi)
+# 
+# players <- players %>%
+#   left_join(fpi_df, by = c("team" = "team_name", "year" = "year"))
+# 
+# is.na(players$fpi) %>% sum()
+# 
+# recroot_list <- list()
+# 
+# for (yr in 2006:2025) {
+#   recroot_list[[as.character(yr)]] <- cfbd_recruiting_team(year = yr)
+# }
+# 
+# recroot_df <- bind_rows(recroot_list) %>%
+#   select(team, year, points)
+# 
+# players <- players %>%
+#   left_join(recroot_df, by = c("team", "year"))
+# 
+# is.na(players$points) %>% sum()
+# 
+# players <- players%>%
+#   mutate(fpi = as.numeric(fpi))
+# 
+# cfbd_game_weather(year = 2006)
+# 
+# weather_list <- list()
+# 
+# for (yr in 2006:2025) {
+#   weather_list[[as.character(yr)]] <- cfbd_game_weather(year = yr)
+# }
+# 
+# weather_df <- bind_rows(weather_list) 
+# 
+# weather_team_games <- weather_df %>%
+#   select(
+#     game_id,
+#     season,
+#     week,
+#     season_type,
+#     temperature,
+#     dew_point,
+#     humidity,
+#     precipitation,
+#     snowfall,
+#     wind_speed,
+#     pressure,
+#     game_indoors,
+#     home_team,
+#     away_team
+#   ) %>%
+#   tidyr::pivot_longer(
+#     cols = c(home_team, away_team),
+#     names_to = "home_away",
+#     values_to = "team"
+#   ) %>%
+#   mutate(
+#     home_away = ifelse(home_away == "home_team", "home", "away")
+#   )
+# 
+# weather_team_season <- weather_team_games %>%
+#   group_by(season, team) %>%
+#   summarize(
+#     avg_temp = mean(temperature, na.rm = TRUE),
+#     avg_humidity = mean(humidity, na.rm = TRUE),
+#     avg_wind = mean(wind_speed, na.rm = TRUE),
+#     avg_pressure = mean(pressure, na.rm = TRUE),
+#     pct_indoors = mean(game_indoors, na.rm = TRUE),
+#     .groups = "drop"
+#   )
+# 
+# players <- players %>%
+#   left_join(
+#     weather_team_season,
+#     by = c("team" = "team", "year" = "season")
+#   )
+# 
+# players <- players%>%
+#   na.omit()
+# 
+# players <- players%>% rename(recruiting_points = points)
+```
+
+```{r}
+# # 1. Get unique year-team combinations from your players dataset
+# year_team_df <- players %>%
+#   select(year, team) %>%
+#   distinct()
+# 
+# # 2. Pull passing stats for each team-season
+# passing_stats_list <- pmap(
+#   list(year_team_df$year, year_team_df$team),
+#   function(year, team) {
+#     tryCatch({
+#       cfbd_game_player_stats(year = year, team = team, category = "passing") %>%
+#         select(athlete_id, passing_qbr) %>%
+#         mutate(year = year)
+#     }, error = function(e) {
+#       tibble(athlete_id = NA, passing_qbr = NA, year = year)
+#     })
+#   }
+# )
+# 
+# # 3. Combine and collapse to one row per player-season
+# passing_stats_df <- bind_rows(passing_stats_list) %>%
+#   filter(!is.na(athlete_id)) %>%
+#   mutate(athlete_id = as.character(athlete_id)) %>%
+#   group_by(athlete_id, year) %>%
+#   summarise(passing_qbr = mean(passing_qbr, na.rm = TRUE), .groups = "drop")
+# 
+# passing_stats_df <- passing_stats_df %>%
+#   mutate(athlete_id = as.character(athlete_id))
+# 
+# # 4. Join back to your players dataset
+# players <- players %>%
+#   mutate(athlete_id = as.character(athlete_id)) %>%
+#   left_join(passing_stats_df, by = c("athlete_id", "year"))
+# 
+# write_csv(players, "Data/players_random_full.csv")
+```
+
+```{r}
+# # Null model: intercept only
+# null_model <- lm(passing_qbr ~ 1, data = players)
+# 
+# # Full model: all predictors
+# full_model <- lm(
+#   passing_qbr ~ conference + passing_completions + passing_att + passing_pct +
+#     passing_yds + passing_td + passing_int + passing_ypa +
+#     rushing_car + rushing_yds + rushing_td + rushing_ypc +
+#     rushing_long + dual_threat + qb_type +
+#     off_explosiveness + off_success_rate + off_pts_per_opp + fpi +
+#     recruiting_points + avg_temp + avg_humidity + avg_wind + avg_pressure + pct_indoors,
+#   data = players
+# )
+# 
+# 
+# forward_model <- step(
+#   null_model,
+#   scope = list(lower = null_model, upper = full_model),
+#   direction = "forward",
+#   trace = TRUE   # shows steps in console
+# )
+# 
+# players <- players %>%
+#   mutate(
+#     predicted_qbr = predict(forward_model, newdata = players)
+#   )
+# 
+# # Save the model
+# saveRDS(forward_model, "forward_model.rds")
+# 
+# write_csv(players, "Data/players_random_full.csv")
+```
+
+Here are some summary graphs for some key variables:
+
+```{r}
+players %>%
+  ggplot(aes(x = fpi)) +
+  geom_histogram(binwidth = 1, fill = "blue", alpha = 0.7) +
+  labs(
+    title = "Distribution of Team FPI Ratings (2006–2025)",
+    x = "FPI Rating",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+players %>%
+  ggplot(aes(x = recruiting_points)) +
+  geom_histogram(binwidth = 5, fill = "green", alpha = 0.7) +
+  labs(
+    title = "Distribution of Team Recruiting Points (2006–2025)",
+    x = "Recruiting Points",
+    y = "Count"
+  ) +
+  theme_minimal()
+
+players %>%
+  ggplot(aes(x = avg_temp)) +
+  geom_histogram(binwidth = 5, fill = "orange", alpha = 0.7) +
+  labs(
+    title = "Distribution of Average Game Temperature (2006–2025)",
+    x = "Average Temperature (°F)",
+    y = "Count"
+  ) +
+  theme_minimal()
+```
+
+### Average Weather Conditions by QB Type
+
+```{r}
+players%>%
+  group_by(qb_type) %>%
+  summarise(
+    avg_temp = round(mean(avg_temp, na.rm = TRUE),2),
+    avg_humidity = round(mean(avg_humidity, na.rm = TRUE),2),
+    avg_wind = round(mean(avg_wind, na.rm = TRUE), 2),
+    avg_pressure = round(mean(avg_pressure, na.rm = TRUE), 2),
+    pct_indoors = round(mean(pct_indoors, na.rm = TRUE), 2),
+    .groups = "drop"
+  )%>%
+  datatable(
+  caption = "Average Weather Conditions by Quarterback Type (2006–2025)",
+  options = list(pageLength = 5, scrollX = TRUE
+  ))
+```
+
+## Model Diagnostics
+
+### Multicolinearity
+
+```{r}
+vif_vals <- vif(forward_model)
+
+# If it's a matrix (factor variables), convert to a vector
+if (is.matrix(vif_vals)) {
+  vif_vals <- as.data.frame(vif_vals) %>%
+    rownames_to_column("Predictor") %>%
+    rename(VIF = 2) %>%            # second column has numeric VIF
+    mutate(VIF = round(as.numeric(VIF), 2))
+} else {
+  # numeric vector case
+  vif_vals <- as.data.frame(vif_vals) %>%
+    rownames_to_column("Predictor") %>%
+    rename(VIF = 2) %>%
+    mutate(VIF = round(as.numeric(VIF), 2))
+}
+
+# Display nicely
+vif_vals %>%
+  kable(caption = "Variance Inflation Factors (VIF) for Forward Selection Model") %>%
+  kable_styling(full_width = FALSE)
+```
+
+### Influence Diagnostics
+
+```{r}
+# Model shorthand
+fit <- forward_model
+p   <- length(coef(fit))
+n   <- nrow(fit$model)
+
+# Cutoffs
+lev_cutoff   <- 2 * p / n
+res_cutoff   <- 2
+dfits_cutoff <- 2 * sqrt((p + 1) / n)
+cooks_cutoff <- 4 / n
+dfbeta_cutoff <- 2 / sqrt(n)
+
+# Build influence table
+influence_df <- players %>%
+  mutate(
+    fitted      = fitted(fit),
+    stand_resid = rstandard(fit),
+    hat         = hatvalues(fit),
+    dfits       = dffits(fit),
+    cooks       = cooks.distance(fit),
+    max_dfbeta  = apply(abs(dfbetas(fit)), 1, max)
+  ) %>%
+  mutate(
+    high_leverage = hat > lev_cutoff,
+    large_resid   = abs(stand_resid) > res_cutoff,
+    high_dfits    = abs(dfits) > dfits_cutoff,
+    high_cooks   = cooks > cooks_cutoff,
+    high_dfbeta  = max_dfbeta > dfbeta_cutoff
+  ) %>%
+  mutate(
+    influential = high_leverage | large_resid | high_dfits | high_cooks | high_dfbeta
+  ) %>%
+  filter(influential) %>%
+  select(
+    player, year, passing_qbr,
+    fitted, stand_resid, hat, dfits, cooks, max_dfbeta,
+    high_leverage, large_resid, high_dfits, high_cooks, high_dfbeta
+  )
+
+# View the resulting dataframe
+datatable(
+  influence_df,
+  extensions = c("Buttons", "ColReorder"),
+  options = list(
+    pageLength = 8,
+    scrollX = TRUE,
+    dom = "Bfrtip",
+    buttons = c("colvis")
+  ),
+  caption = "Influential Data in the Model"
+)
+```
+
+```{r, fig.align='center', fig.width=8, fig.height=6}
+ggplot(players, aes(x = fitted(fit), y = rstandard(fit))) +
+  geom_point(alpha = 0.4) +
+
+  geom_point(
+    data = influence_df,
+    aes(x = fitted, y = stand_resid),
+    color = "red",
+    size = 3
+  ) +
+
+  geom_text_repel(
+    data = influence_df,
+    aes(x = fitted, y = stand_resid, label = player),
+    size = 3,
+    max.overlaps = 50
+  ) +
+
+  geom_hline(yintercept = 0, color = "gray50") +
+  geom_hline(yintercept = c(-res_cutoff, res_cutoff),
+             linetype = "dotted", color = "red") +
+  geom_hline(yintercept = c(-3, 3),
+             linetype = "dashed", color = "blue") +
+
+  annotate(
+    "text",
+    x = Inf, y = Inf,
+    hjust = 1.1, vjust = 1.1,
+    size = 3.5,
+    label = paste0(
+      "Cutoffs:\n",
+      "Std. Residual = ±", res_cutoff, "\n",
+      "Leverage > ", round(lev_cutoff, 3), "\n",
+      "DFITS > ", round(dfits_cutoff, 3), "\n",
+      "Cook's D > ", round(cooks_cutoff, 4), "\n",
+      "DFBETAS > ", round(dfbeta_cutoff, 3)
+    )
+  ) +
+
+  labs(
+    title = "Regression Influence Diagnostics",
+    x = "Fitted Values",
+    y = "Standardized Residuals"
+  ) +
+
+  theme_minimal() +
+  theme(legend.position = "none")
+
+```
+
+
+Key Interpretations:
+
+- The regression analysis indicates that several factors significantly influence a quarterback's passing QBR. Notably, being a dual-threat quarterback positively impacts QBR, suggesting that versatility in both passing and rushing contributes to better overall performance.
+- Offensive efficiency metrics, such as explosiveness and success rate, also play crucial roles in enhancing a quarterback's effectiveness. Higher values in these metrics are associated with improved QBR, highlighting the importance of a dynamic and efficient offense.
+- Additionally, traditional passing statistics, including completions, attempts, and yards per attempt, are significant predictors of QBR. This underscores the continued relevance of passing proficiency in evaluating quarterback performance.
+- Overall, the model suggests that a combination of dual-threat capabilities, offensive efficiency, and strong passing skills are key determinants of a quarterback's success on the field.
+
+## Statistical Tests
+
+### ANOVA Tests
+
+```{r, echo = TRUE}
+anova_pts <- aov(off_pts_per_opp ~ qb_type, data = players)
+summary(anova_pts)
+TukeyHSD(anova_pts)
+```
+
+Key Interpretations: 
+
+- Points per opportunity differs by QB type
+- Dual-threat offenses score around 1–1.5 more points per scoring opportunity than other QB types
+
+```{r, echo = TRUE}
+anova_expl <- aov(off_explosiveness ~ qb_type, data = players)
+summary(anova_expl)
+TukeyHSD(anova_expl)
+```
+
+Key Interpretations: 
+
+- Offensive explosiveness differs by QB type
+- Dual-threat offenses exhibit higher offensive explosiveness, averaging approximately 0.08–0.11 more explosive plays per opportunity than offenses led by other quarterback types.
+
+```{r, echo = TRUE}
+anova_sr <- aov(off_success_rate ~ qb_type, data = players)
+summary(anova_sr)
+TukeyHSD(anova_sr)
+```
+
+Key Interpretations: 
+
+- Offensive success rate differs by QB type
+- Dual-threat offenses are more successful, averaging approximately 0.035 - 0.07 more successful plays (see definition of a successful play) than offenses led by other quarterback types.
+
+
+## Conclusion
+
+The emergence of the dual-threat quarterback has materially altered the offensive landscape of college football. Across Power Five conferences from 2006 to 2025, teams led by dual-threat quarterbacks are consistently associated with higher offensive efficiency, improved quarterback performance as measured by QBR, and greater team success in terms of wins. These relationships persist even after accounting for team strength and other relevant controls, suggesting that quarterback mobility has become a meaningful component of modern offensive effectiveness rather than a situational advantage.
+
+Taken together, the findings indicate that the evolution toward dual-threat quarterback play reflects a broader strategic shift in college football offenses, emphasizing versatility and adaptability. While the results do not imply direct causation, they provide strong evidence that dual-threat quarterbacks are a defining feature of successful offenses in the contemporary game.
+
+## Thank You!
+
+This report used OpenAI’s ChatGPT (Version 5.1, 2025) for assistance in R code debugging, formatting model output tables, and refining methodological descriptions.
+
+Hello! I am an aspiring data analyst that loves sports, and I am putting together projects to showcase skills I am learning. I hope you enjoy! Here are some of my other projects and accounts if you are interested:
+
+- www.linkedin.com/in/jake-blumengarten
+- https://github.com/JakeBlumengarten?tab=repositories
+- blumengartenjake@gmail.com
+
