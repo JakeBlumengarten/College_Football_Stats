@@ -22,6 +22,32 @@ The final regression model demonstrates strong predictive stability and generali
 ## Notes
 This analysis focuses on historically elite and high-profile teams and should be interpreted as explanatory rather than population-wide inference.
 
+# Evaluating the Impact of Dual-Threat Quarterbacks on College Football Performance
+
+This project analyzes how quarterback style—specifically the rise of the dual-threat quarterback—relates to individual performance in college football. Using game- and season-level data from FBS quarterbacks, I model passing QBR as a function of passing efficiency, rushing production, team context, and competition level. The goal is to determine whether quarterback mobility provides independent value beyond traditional passing statistics and team strength. Check it out here: http://rpubs.com/jakeblum54/1383724
+
+## Methods
+- Collected game-level player statistics using the cfbfastR package
+- Aggregated game data to season-level quarterback performance
+- Classified quarterbacks by style (dual-threat vs. non–dual-threat) using rushing and passing thresholds
+- Applied forward-selection linear regression to model passing QBR
+- Addressed multicollinearity using variance inflation factors (VIF)
+- Identified influential observations using leverage, Cook’s Distance, DFFITS, and DFBETAS
+- Evaluated model assumptions with residual diagnostics and influence plots
+
+## Results
+
+The final regression model shows that quarterback efficiency and decision-making dominate raw production in explaining QBR. Rushing efficiency and situational mobility are positively associated with performance, while high rushing volume is negatively associated, indicating diminishing returns. Dual-threat quarterback status remains a statistically significant predictor of QBR after controlling for passing metrics, team offensive success, and strength of schedule, suggesting quarterback style has an independent relationship with performance.
+
+## Tools & Technologies
+- R
+- cfbfastR, dplyr, car, ggplot2, ggrepel
+- Linear regression, model diagnostics, influence analysis
+
+## Notes
+
+This analysis focuses on FBS quarterbacks with meaningful playing time and should be interpreted as explanatory rather than causal. QBR is used as a summary performance metric and reflects both individual decision-making and team context.
+
 ## Author
 Jake Blumengarten  
 [LinkedIn](https://www.linkedin.com/in/jake-blumengarten)  
