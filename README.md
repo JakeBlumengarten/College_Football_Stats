@@ -7,9 +7,9 @@ A comprehensive statistical analysis project using 20+ years of college football
 
 ## 📄 Interactive Reports
 
-- 📊 [**Elite Teams Analysis Report**](https://htmlpreview.github.io/?https://github.com/JakeBlumengarten/College_Football_Stats/blob/main/team_report.html) - Main analysis with interactive plots
-- 🔄 [**Random Sample Validation Report**](https://htmlpreview.github.io/?https://github.com/JakeBlumengarten/College_Football_Stats/blob/main/team_report_random.html) - Out-of-sample validation
-- 🏈 [**Dual-Threat Quarterback Analysis**](https://htmlpreview.github.io/?https://github.com/JakeBlumengarten/College_Football_Stats/blob/main/dual_threats.html) - QB style evolution study
+- 📊 [**Elite Teams Analysis Report**](https://jakeblumengarten.shinyapps.io/predict_total_wins/) - Main analysis with interactive plots
+- 🔄 [**Random Sample Validation Report**](https://jakeblumengarten.shinyapps.io/team_report_random/) - Out-of-sample validation
+- 🏈 [**Dual-Threat Quarterback Analysis**](https://rpubs.com/jakeblum54/1383724) - QB style evolution study
 
 > **Note**: Reports are best viewed via [HTML Preview](https://htmlpreview.github.io/) for full interactivity.  Alternatively, download the HTML files and open them locally in your browser.
 
